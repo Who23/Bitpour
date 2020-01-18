@@ -89,9 +89,42 @@ def parse_token(token, gen):
         
         return dict(zip(items[0::2], items[1::2]))
 
+## encode an object into a bencode bytestring
+def encode(obj):
+    if isinstance(obj, dict):
+        bencode = b"d"
+        for (key, value) in obj.items():
+            bencode += encode(key)
+            bencode += encode(value)
+        bencode += b"e"
+
+        return bencode
+
+    if isinstance(obj, list):
+        bencode = "l"
+        for item in obj:
+            bencode += encode(item)
+        bencode += "e"
+
+        return bencode
+
+    if isinstance(obj, bytes):
+        bencode = bytes(str(len(obj)) + ":", "utf8")
+        bencode += obj
+        return bencode
+
+    if isinstance(obj, str):
+        bencode = bytes(str(len(obj)) + ":" + obj, "utf8")
+        return bencode
+
+    if isinstance(obj, int):
+        return bytes("i" + str(obj) + "e", "utf8")
+
 # take a raw bencode string and return a python object
 def decode(bencode):
     tokens = tokenize_bencode(bencode)
-    parse_token(next(tokens), tokens)
+    obj = parse_token(next(tokens), tokens)
     for _ in tokens:
         raise BEncodeDecodeError("Invalid Bencode - trailing tokens")
+
+    return obj
