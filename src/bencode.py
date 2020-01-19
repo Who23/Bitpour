@@ -15,7 +15,7 @@ def tokenize_bencode(bencode):
             yield bytes(chr(bencode[index]), "utf8")
 
         # 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -
-        # store the number in a string to be decoded as a bigendian
+        # store the number in a string to be decoded
         elif (48 <= bencode[index] <= 57) or bencode[index] == 45:
             number += chr(bencode[index])
 
@@ -91,6 +91,8 @@ def parse_token(token, gen):
 
 ## encode an object into a bencode bytestring
 def encode(obj):
+
+    # parse dict by recursively encoding keys and values
     if isinstance(obj, dict):
         bencode = b"d"
         for (key, value) in obj.items():
@@ -100,7 +102,8 @@ def encode(obj):
 
         return bencode
 
-    if isinstance(obj, list):
+    # parse list by recursively encoding keys and values
+    elif isinstance(obj, list):
         bencode = "l"
         for item in obj:
             bencode += encode(item)
@@ -108,19 +111,21 @@ def encode(obj):
 
         return bencode
 
-    if isinstance(obj, bytes):
+    # concatenate length and bytes - bytestrings usually for pieces hash blob
+    elif isinstance(obj, bytes):
         bencode = bytes(str(len(obj)) + ":", "utf8")
         bencode += obj
         return bencode
 
-    if isinstance(obj, str):
+    # concatenate length and str
+    elif isinstance(obj, str):
         bencode = bytes(str(len(obj)) + ":" + obj, "utf8")
         return bencode
 
-    if isinstance(obj, int):
+    elif isinstance(obj, int):
         return bytes("i" + str(obj) + "e", "utf8")
 
-# take a raw bencode string and return a python object
+## take a raw bencode string and return a python object
 def decode(bencode):
     tokens = tokenize_bencode(bencode)
     obj = parse_token(next(tokens), tokens)

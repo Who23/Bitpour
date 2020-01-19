@@ -2,13 +2,32 @@
 import sys
 import bencode
 import hashlib
+from random import randint
+
+# port to listen on
+PORT = 6881
+ID = bytes('(BU0000)' + chr(randint(0, 255)), "latin1")
 
 ## helper function to write to stderr and quit
 def error_quit(error):
     sys.stderr.write("Error: " + error + "\n")
     sys.exit(1)
 
+
+# def construct_request(metafile):
+#     params = {
+#         "info_hash"  : metafile["info_hash"]
+#         "peer_id"    : ID
+#         "port"       :
+#         "uploaded"   :
+#         "downloaded" :
+#         "compact"    :
+#         "left"       :
+#     }
+
 def main():
+    print(ID)
+
     # make sure a file name is provided
     if len(sys.argv) < 2:
         error_quit("File name not provided")
