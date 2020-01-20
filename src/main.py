@@ -1,42 +1,30 @@
 #!/usr/bin/env python3.8
 import sys
-import bencode
-import hashlib
+from torrent import Torrent
+from tracker import Tracker, TrackerParseError
 from random import randint
 
-# port to listen on
+# Peer ID that identifies the client.
+ID = bytes('-BU0000-' + ''.join([chr(randint(0, 255)) for _ in range(12)]), "latin1")
+
+# Port # we are listening on
 PORT = 6881
-ID = bytes('(BU0000)' + chr(randint(0, 255)), "latin1")
 
 ## helper function to write to stderr and quit
 def error_quit(error):
     sys.stderr.write("Error: " + error + "\n")
     sys.exit(1)
 
-
-# def construct_request(metafile):
-#     params = {
-#         "info_hash"  : metafile["info_hash"]
-#         "peer_id"    : ID
-#         "port"       :
-#         "uploaded"   :
-#         "downloaded" :
-#         "compact"    :
-#         "left"       :
-#     }
-
 def main():
-    print(ID)
 
     # make sure a file name is provided
     if len(sys.argv) < 2:
         error_quit("File name not provided")
 
-    # attempt to open file
-    metafile = {}
+    ## attempt to decode torrent
+    torrent = None
     try:
-        with open(sys.argv[1], 'rb') as f:
-            metafile = bencode.decode(f.read())
+        torrent = Torrent(sys.argv[1])
 
     except OSError as e:
         error_quit(f"Could not open torrent file - {e}")
@@ -44,9 +32,24 @@ def main():
     except bencode.BEncodeDecodeError as e:
         error_quit(f"Could not decode torrent file - {e}")
 
-    # calculate the infohash nessecary for the announce request and put it in the metafile dict
-    info_hash = hashlib.sha1(bencode.encode(metafile["info"])).hexdigest()
-    metafile["info_hash"] = info_hash
+    except Exception as e:
+        error_quit(f"Unexpected error! - {e}")
+        
+
+    ## attempt to contact tracker
+    tracker = Tracker(torrent, ID, PORT)
+    try:
+        response = tracker.request()
+
+    except TrackerParseError as e:
+        error_quit(f"Tracker Parsing error - {e}")
+
+    except Exception as e:
+        error_quit(f"Unexpected error! - {e}")
+
+    
+
+    print(response)
 
 
 if __name__ == "__main__":

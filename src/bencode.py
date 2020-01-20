@@ -1,5 +1,5 @@
 # functions to deocde a BEncoded string to a python object
-# also a exception
+# also an exception
 
 class BEncodeDecodeError(Exception):
     pass
