@@ -19,3 +19,10 @@ class Torrent:
         self.filename = metafile["info"]["name"]
         self.length = metafile["info"]["length"]
         self.info_hash = sha1(bencode.encode(metafile["info"])).digest()
+
+    def get_piece_length(self, piece_index):
+        if piece_index == len(self.pieces) - 1:
+            return (self.length - (self.piece_length * (len(self.pieces) - 1)))
+            
+
+        return self.piece_length
