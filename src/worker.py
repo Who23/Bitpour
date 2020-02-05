@@ -42,65 +42,108 @@ class Worker:
             except Exception as e:
                 print(f"{self.name}: {e}")
                 self.peers.task_done()
-                await self.stream.close()
+                if not self.stream.is_closed(): await self.stream.close()
                 continue
 
+            try:
+                while True:
+                    if not self.peer.peer_choking:
+                        self.state = await self.get_valid_piece()
 
-            while True:
-                if not self.peer.peer_choking:
-                    (piece_index, piece_hash, piece_length) = await self.pieces.get()
-                    print(f"{piece_index}: {piece_hash} ({piece_length})")
+                        try:
+                            await self.download_piece()
 
-                    if not self.peer.has_bit(piece_index):
-                        print("Peer does not have piece")
-                        await self.pieces.put((piece_index, piece_hash, piece_length))
-                        continue
+                            self.verify_piece(bytes(self.state["piece_buf"]))
 
+                            await self.downloaded_q.put((self.state["piece"]["index"], bytes(self.state["piece_buf"])))
+                            self.pieces.task_done()
+                        except Exception as e:
+                            # await self.pieces.put((self.state["piece"]["index"], self.state["piece"]["hash"], self.state["piece"]["length"]))
+                            # print(f"Error!: {e}")
+                            raise e
 
-
-
-                    self.state = {
-                        "pipelined_requests": 0,
-                        "piece_buf": bytearray(b""),
-                        "block_num": 0
-                    }
-
-                    while len(self.state["piece_buf"]) != piece_length:
-                        while self.state["pipelined_requests"] < self.NUM_REQUESTS:
-                            request_msg = Request(piece_index, 
-                                                  self.state["block_num"] * self.BLOCK_SIZE, 
-                                                  self.BLOCK_SIZE)
-
-                            self.stream.write(request_msg.construct())
-                            await self.stream.drain()
-
-                            self.state["block_num"] += 1
-                            self.state["pipelined_requests"] += 1
-
-                            print("Wrote request")
-
-                        print("awaiting pieces")
+                    else:
+                        print("awaiting message")
                         await self.handle_message()
 
+                        if self.peer.client_choking and not self.peer.peer_choking:
+                            print("wrote interested")
+                            self.stream.write(Unchoke().construct())
+                            self.stream.write(Interested().construct())
 
-                else:
-                    print("awaiting message")
-                    await self.handle_message()
+                            self.peer.client_choking = False
+                            self.peer.client_interested = True
 
-                    if self.peer.client_choking and not self.peer.peer_choking:
-                        print("wrote interested")
-                        self.stream.write(Unchoke().construct())
-                        self.stream.write(Interested().construct())
-
-                        self.peer.client_choking = False
-                        self.peer.client_interested = True
+            except Exception as e:
+                # print(f"Error!: {e}")
+                # if not self.stream.is_closed(): await self.stream.close()
+                # self.peers.task_done()
+                # continue
+                raise e
             
-
 
             await self.stream.close()
             break
 
         print(f"{self.name}: Finished")
+
+    async def download_piece(self):
+        blocks_needed = self.state["piece"]["length"]/self.BLOCK_SIZE
+        print(f"Number of pieces: {blocks_needed}")
+
+        while blocks_needed > self.state["downloaded_blocks"]:
+            while self.state["pipelined_requests"] < self.NUM_REQUESTS and self.state["block_num"] < blocks_needed:
+                request_length = self.BLOCK_SIZE
+                
+                if (remaining_length := self.state["piece"]["length"] - self.state["block_num"] * self.BLOCK_SIZE) < self.BLOCK_SIZE:
+                    request_length = remaining_length
+
+                request_msg = Request(self.state["piece"]["index"], 
+                                        self.state["block_num"] * self.BLOCK_SIZE, 
+                                        request_length)
+
+                self.stream.write(request_msg.construct())
+                await self.stream.drain()
+
+                self.state["block_num"] += 1
+                self.state["pipelined_requests"] += 1
+
+
+            await self.handle_message()
+
+    async def get_valid_piece(self):
+        while True:
+            (piece_index, piece_hash, piece_length) = await self.pieces.get()
+            print(f"{piece_index}: {piece_hash} ({piece_length})")
+
+            if not self.peer.has_bit(piece_index):
+                print("Peer does not have piece")
+                await self.pieces.put((piece_index, piece_hash, piece_length))
+                continue
+
+            state = {
+                "pipelined_requests": 0,
+                "piece": {
+                    "hash": piece_hash,
+                    "index": piece_index,
+                    "length": piece_length
+                },
+                "piece_buf": bytearray(piece_length),
+                "block_num": 0,
+                "downloaded_blocks": 0
+            }
+
+            return state
+
+    def verify_piece(self, piece):
+        piece = bytes(piece)
+        print(f"given hash: {sha1(piece).digest()}")
+        piece_hash = self.state["piece"]["hash"]
+        print(f"real hash: {piece_hash}")
+        if sha1(piece).digest() != self.state["piece"]["hash"]:
+            raise Exception("Does not match hash!")
+
+        return True
 
     async def handle_message(self):
         MSG_TYPE = {
@@ -127,7 +170,6 @@ class Worker:
             
             MSG_TYPE[msg.id](msg)
             break
-            
 
     ## create a connection with a peer
     async def connect(self, peer):
@@ -150,6 +192,7 @@ class Worker:
         handshake = await self.construct_handshake()
         self.stream.write(handshake)
         await self.stream.drain()
+        print("written handshake")
 
         response = await self.stream.read(68)
         print("Recieved handshake")
@@ -205,6 +248,14 @@ class Worker:
 
     def handle_piece(self, msg):
         print("Piece")
+        if msg.index != self.state["piece"]["index"]:
+            raise ValueError
+
+        block_length = len(msg.block)
+
+        self.state["piece_buf"][msg.begin:msg.begin+block_length] = msg.block
+        self.state["pipelined_requests"] -= 1
+        self.state["downloaded_blocks"] += 1
 
     def handle_cancel(self, msg):
         print("Cancel")
@@ -223,13 +274,22 @@ class AsyncStream:
         self.writer = writer
 
     async def read(self, nbytes: int):
-        read_bytes = b""
-        read_bytes_num = 0
-        while read_bytes_num < nbytes:
-            read_bytes += await self.reader.read(nbytes - read_bytes_num)
-            read_bytes_num = len(read_bytes)
+        a = await asyncio.wait_for(asyncio.create_task(self.read_internal(nbytes)), timeout=150)
+        return a
 
-        return read_bytes
+    async def read_internal(self, nbytes: int):
+        response = b""
+        counter = 0
+        while nbytes != 0:
+            recieved_data = await self.reader.read(nbytes)
+
+            nbytes -= len(recieved_data)
+            response += recieved_data
+            # if len(recieved_data) != 0:
+            #     print(f"Recieved {len(recieved_data)} bytes")
+
+        # print(f"response length: {len(response)}")
+        return response
 
     def write(self, bytestring: bytes):
         self.writer.write(bytestring)
@@ -241,4 +301,5 @@ class AsyncStream:
         self.writer.close()
         await self.writer.wait_closed()
 
-    
+    def is_closed(self):
+        return self.writer.is_closing()

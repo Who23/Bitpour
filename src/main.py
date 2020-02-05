@@ -67,7 +67,7 @@ def main():
 
 
     # make sure the peers blob is correct
-    if len(response["peers"]) % 6 != 0 or len(response["peers6"]) % 18 != 0:
+    if len(response["peers"]) % 6 != 0:
         error_quit("Malformed peers list")
 
 
@@ -95,11 +95,29 @@ async def do_connect(peers, torrent):
     [peer_queue.put_nowait(peer) for peer in peers]
     [pieces_queue.put_nowait((index, piece, torrent.get_piece_length(index))) for index, piece in enumerate(torrent.pieces)]
 
-    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(1)]
+    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(15)]
     [asyncio.create_task(worker.run()) for worker in handlers]
+    await asyncio.gather(handlers)
     print("handlers finished")
+
     await pieces_queue.join()
     [handler.cancel() for handler in handlers]
+
+    downloaded_pieces = []
+    for x in range(downloaded_queue.qsize):
+        downloaded_pieces.append(await downloaded_queue.get())
+
+    downloaded_pieces.sort(key=sort_index)
+
+    with open(torrent.filename, "wb+") as f:
+        for (piece_index, piece) in downloaded_pieces:
+            f.write(piece)
+
+
+
+def sort_index(q_item):
+    return q_item[0]
+
 
 
 
