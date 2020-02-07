@@ -95,16 +95,16 @@ async def do_connect(peers, torrent):
     [peer_queue.put_nowait(peer) for peer in peers]
     [pieces_queue.put_nowait((index, piece, torrent.get_piece_length(index))) for index, piece in enumerate(torrent.pieces)]
 
-    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(15)]
+    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(30)]
+    
     [asyncio.create_task(worker.run()) for worker in handlers]
-    await asyncio.gather(handlers)
+    # await asyncio.gather(*[worker.run() for worker in handlers])
     print("handlers finished")
 
     await pieces_queue.join()
-    [handler.cancel() for handler in handlers]
 
     downloaded_pieces = []
-    for x in range(downloaded_queue.qsize):
+    for x in range(downloaded_queue.qsize()):
         downloaded_pieces.append(await downloaded_queue.get())
 
     downloaded_pieces.sort(key=sort_index)
@@ -117,44 +117,6 @@ async def do_connect(peers, torrent):
 
 def sort_index(q_item):
     return q_item[0]
-
-
-
-
-# async def handle_peer(name, peer_queue, pieces_queue, peer_id, info_hash):
-#     while True:
-
-
-#         ## Exchange handshakes
-#         try:
-#             await exchange_handshakes(reader, writer, peer_id, info_hash)
-#         except InvalidHandshake:
-#             print("{name}: Invalid handshake")
-#             peer_queue.task_done()
-#             continue
-#         except Exception as e:
-#             print(e)
-
-
-#         ## Process Messages
-#         print("Awaiting messages")
-
-#         length = int.from_bytes(await reader.read(4), byteorder="big")
-#         print(f"Message len: {length}")
-#         msg = await reader.read(length)
-
-#         try:
-#             msg = Message(msg)
-#         except MessageParseError as e:
-#             writer.close()
-#             await writer.wait_closed()
-#             peer_queue.task_done()
-#             continue
-        
-#         print(f"Type: {msg.msg_type}")
-#         print(f"Payload: {msg.payload}")
-
-#         break
 
 
 if __name__ == "__main__":

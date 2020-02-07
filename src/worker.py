@@ -24,7 +24,8 @@ class Worker:
         self.name = name
 
     async def run(self):
-        while True:
+        print(f"{self.name}: start!")
+        while self.pieces.qsize() > 0:
             self.peer = await self.peers.get()
 
             try:
@@ -34,7 +35,7 @@ class Worker:
                 self.peers.task_done()
                 continue
 
-            print(f"{self.name}: Connected to {self.peer.host.exploded}:{self.peer.port}")
+            # print(f"{self.name}: Connected to {self.peer.host.exploded}:{self.peer.port}")
 
             try:
                 handshake = await self.construct_handshake()
@@ -46,28 +47,37 @@ class Worker:
                 continue
 
             try:
-                while True:
+                while self.pieces.qsize() > 0:
                     if not self.peer.peer_choking:
                         self.state = await self.get_valid_piece()
 
                         try:
                             await self.download_piece()
 
-                            self.verify_piece(bytes(self.state["piece_buf"]))
+                            if not self.verify_piece(bytes(self.state["piece_buf"])):
+                                await self.pieces.put((self.state["piece"]["index"], self.state["piece"]["hash"], self.state["piece"]["length"]))
+                                self.pieces.task_done()
+                                print("put")
+                                continue
 
                             await self.downloaded_q.put((self.state["piece"]["index"], bytes(self.state["piece_buf"])))
                             self.pieces.task_done()
+                            print("doned")
+                            print(f"{self.name} downloaded {self.state['piece']['index']}")
+                            print(f"{self.name}::::::::::::::::::::::::::::{self.pieces.qsize()}")
                         except Exception as e:
-                            # await self.pieces.put((self.state["piece"]["index"], self.state["piece"]["hash"], self.state["piece"]["length"]))
-                            # print(f"Error!: {e}")
+                            await self.pieces.put((self.state["piece"]["index"], self.state["piece"]["hash"], self.state["piece"]["length"]))
+                            self.pieces.task_done()
+                            print("put")
+                            # print(f"{self.name} Error!: {e}")
                             raise e
 
                     else:
-                        print("awaiting message")
-                        await self.handle_message()
+                        # print(f"{self.name} awaiting message")
+                        await asyncio.create_task(self.handle_message())
 
                         if self.peer.client_choking and not self.peer.peer_choking:
-                            print("wrote interested")
+                            # print("{self.name} wrote interested")
                             self.stream.write(Unchoke().construct())
                             self.stream.write(Interested().construct())
 
@@ -75,21 +85,19 @@ class Worker:
                             self.peer.client_interested = True
 
             except Exception as e:
-                # print(f"Error!: {e}")
-                # if not self.stream.is_closed(): await self.stream.close()
-                # self.peers.task_done()
-                # continue
-                raise e
-            
+                print(f"{self.name} super Error!: {e}")
+                if not self.stream.is_closed(): await self.stream.close()
+                self.peers.task_done()
+                continue
+                break
 
+            print(f"Current: {self.pieces.qsize()}")
             await self.stream.close()
-            break
 
         print(f"{self.name}: Finished")
 
     async def download_piece(self):
         blocks_needed = self.state["piece"]["length"]/self.BLOCK_SIZE
-        print(f"Number of pieces: {blocks_needed}")
 
         while blocks_needed > self.state["downloaded_blocks"]:
             while self.state["pipelined_requests"] < self.NUM_REQUESTS and self.state["block_num"] < blocks_needed:
@@ -109,39 +117,44 @@ class Worker:
                 self.state["pipelined_requests"] += 1
 
 
-            await self.handle_message()
+            await asyncio.create_task(self.handle_message())
 
     async def get_valid_piece(self):
         while True:
             (piece_index, piece_hash, piece_length) = await self.pieces.get()
-            print(f"{piece_index}: {piece_hash} ({piece_length})")
+            print("get")
+            try:
+                if not self.peer.has_bit(piece_index):
+                    # print("Peer does not have piece")
+                    await self.pieces.put((piece_index, piece_hash, piece_length))
+                    self.pieces.task_done()
+                    print("put")
+                    continue
 
-            if not self.peer.has_bit(piece_index):
-                print("Peer does not have piece")
+                state = {
+                    "pipelined_requests": 0,
+                    "piece": {
+                        "hash": piece_hash,
+                        "index": piece_index,
+                        "length": piece_length
+                    },
+                    "piece_buf": bytearray(piece_length),
+                    "block_num": 0,
+                    "downloaded_blocks": 0
+                }
+
+                return state
+            except:
                 await self.pieces.put((piece_index, piece_hash, piece_length))
+                self.pieces.task_done()
+                print("put")
                 continue
-
-            state = {
-                "pipelined_requests": 0,
-                "piece": {
-                    "hash": piece_hash,
-                    "index": piece_index,
-                    "length": piece_length
-                },
-                "piece_buf": bytearray(piece_length),
-                "block_num": 0,
-                "downloaded_blocks": 0
-            }
-
-            return state
 
     def verify_piece(self, piece):
         piece = bytes(piece)
-        print(f"given hash: {sha1(piece).digest()}")
         piece_hash = self.state["piece"]["hash"]
-        print(f"real hash: {piece_hash}")
         if sha1(piece).digest() != self.state["piece"]["hash"]:
-            raise Exception("Does not match hash!")
+            return False
 
         return True
 
@@ -160,12 +173,11 @@ class Worker:
         
         while True:
             msg_length = int.from_bytes(await self.stream.read(4), byteorder="big")
-            print(f"Message Length: {msg_length}")
             raw_message = await self.stream.read(msg_length)
             msg = parse_message(raw_message)
 
             if isinstance(msg, KeepAlive): 
-                print("KeepAlive")
+                # print("KeepAlive")
                 continue
             
             MSG_TYPE[msg.id](msg)
@@ -173,17 +185,17 @@ class Worker:
 
     ## create a connection with a peer
     async def connect(self, peer):
-        print(f"{self.name}: Attempting {peer.host.exploded}:{peer.port}...")
+        # print(f"{self.name}: Attempting {peer.host.exploded}:{peer.port}...")
         conn = asyncio.open_connection(host=peer.host.exploded, port=peer.port)
         
         try:
             reader, writer = await asyncio.wait_for(conn, timeout=3)
         except asyncio.TimeoutError:
-            raise AsyncConnectionError(f"{peer} connection attempt timed out")
+            raise AsyncConnectionError(f"{self.name} {peer} connection attempt timed out")
         except ConnectionRefusedError:
-            raise AsyncConnectionError(f"peer {peer} refused to connect")
+            raise AsyncConnectionError(f"{self.name} peer {peer} refused to connect")
         except Exception as e:
-            raise AsyncConnectionError(f"error - {e}")
+            raise AsyncConnectionError(f"{self.name} error - {e}")
 
         return AsyncStream(reader, writer)
 
@@ -192,11 +204,9 @@ class Worker:
         handshake = await self.construct_handshake()
         self.stream.write(handshake)
         await self.stream.drain()
-        print("written handshake")
 
         response = await self.stream.read(68)
-        print("Recieved handshake")
-        print(f"Handshake: {response}")
+        # print(f"{self.name} exchanged handshake")
 
         if not await self.valid_handshake(response):
             raise InvalidHandshake
@@ -220,34 +230,34 @@ class Worker:
         return True
 
     def handle_choke(self, msg):
-        print("Choked")
+        # print(f"{self.name} Choked")
         self.peer.peer_choking = True
 
     def handle_unchoke(self, msg):
-        print("Unchoked")
+        # print(f"{self.name} Unchoked")
         self.peer.peer_choking = False
 
     def handle_interested(self, msg):
-        print("Interested")
+        # print(f"{self.name} Interested")
         self.peer.peer_interested = True
 
     def handle_uninterested(self, msg):
-        print("Uninterested")
+        # print(f"{self.name} Uninterested")
         self.peer.peer_interested = False
 
     def handle_have(self, msg):
-        print("Have")
+        # print(f"{self.name} Have")
         self.peer.set_bit(msg.piece_index, 1)
 
     def handle_bitfield(self, msg):
-        print("Bitfield")
+        # print(f"{self.name} Bitfield")
         self.peer.bitfield = bytearray(msg.bitfield)
 
     def handle_request(self, msg):
-        print("Request")
+        print(f"{self.name} Request")
 
     def handle_piece(self, msg):
-        print("Piece")
+        # print(f"{self.name} Piece")
         if msg.index != self.state["piece"]["index"]:
             raise ValueError
 
@@ -258,7 +268,7 @@ class Worker:
         self.state["downloaded_blocks"] += 1
 
     def handle_cancel(self, msg):
-        print("Cancel")
+        print(f"{self.name} Cancel")
 
 
 
@@ -281,10 +291,11 @@ class AsyncStream:
         response = b""
         counter = 0
         while nbytes != 0:
-            recieved_data = await self.reader.read(nbytes)
+            recieved_data = await asyncio.wait_for(self.reader.read(nbytes), 2)
 
-            nbytes -= len(recieved_data)
-            response += recieved_data
+            if recieved_data:
+                nbytes -= len(recieved_data)
+                response += recieved_data
             # if len(recieved_data) != 0:
             #     print(f"Recieved {len(recieved_data)} bytes")
 
