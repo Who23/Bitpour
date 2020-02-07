@@ -83,38 +83,46 @@ def main():
             print(f"Could not parse {peer_bytes}'s ip: {e}")
 
 
-    asyncio.run(do_connect(seed_peers, torrent))
+    asyncio.run(do_download(seed_peers, torrent))
 
     
 ## async function to connect and download from peers
-async def do_connect(peers, torrent):
+async def do_download(peers, torrent):
+
+    # create work and output queuess
     peer_queue = asyncio.Queue()
     pieces_queue = asyncio.Queue()
     downloaded_queue = asyncio.Queue()
 
+    # fill the work queues with the peers and pieces
     [peer_queue.put_nowait(peer) for peer in peers]
     [pieces_queue.put_nowait((index, piece, torrent.get_piece_length(index))) for index, piece in enumerate(torrent.pieces)]
 
+    # create workers
     handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(30)]
     
+    # run workers
     [asyncio.create_task(worker.run()) for worker in handlers]
-    # await asyncio.gather(*[worker.run() for worker in handlers])
-    print("handlers finished")
 
+    # run until all pieces have been downloaded, then cancel workers.
     await pieces_queue.join()
+    [worker.cancel() for worker in handlers]
 
+    # compress output queue into list
     downloaded_pieces = []
-    for x in range(downloaded_queue.qsize()):
+    for _ in range(downloaded_queue.qsize()):
         downloaded_pieces.append(await downloaded_queue.get())
 
+    # sort the output by piece index
     downloaded_pieces.sort(key=sort_index)
 
+    # write pieces to a file
     with open(torrent.filename, "wb+") as f:
-        for (piece_index, piece) in downloaded_pieces:
+        for (_, piece) in downloaded_pieces:
             f.write(piece)
 
 
-
+# helper function to sort by piece index
 def sort_index(q_item):
     return q_item[0]
 
