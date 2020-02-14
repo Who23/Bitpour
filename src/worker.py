@@ -13,6 +13,7 @@ class Worker:
         self.info_hash = torrent.info_hash
         self.peer_id = peer_id
 
+        # the request size and the number of unfulfilled requests we should have
         self.BLOCK_SIZE = 16384
         self.NUM_REQUESTS = 10
 
