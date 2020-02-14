@@ -2,6 +2,9 @@
 import sys
 import asyncio
 import socket
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 from random import randint
 from enum import Enum
@@ -88,29 +91,39 @@ def main():
     
 ## async function to connect and download from peers
 async def do_connect(peers, torrent):
+
+    # create queues for workers
     peer_queue = asyncio.Queue()
     pieces_queue = asyncio.Queue()
     downloaded_queue = asyncio.Queue()
 
+    # fill input queues with data from torrent file
     [peer_queue.put_nowait(peer) for peer in peers]
     [pieces_queue.put_nowait((index, piece, torrent.get_piece_length(index))) for index, piece in enumerate(torrent.pieces)]
 
-    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(30)]
+    # create workers
+    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(40)]
     
+    # run workers
     [asyncio.create_task(worker.run()) for worker in handlers]
-    # await asyncio.gather(*[worker.run() for worker in handlers])
-    print("handlers finished")
 
+    print(pieces_queue.qsize())
+
+    # wait until all pieces have been downloaded
     await pieces_queue.join()
 
+    # compress downloaded pieces into a list
     downloaded_pieces = []
     for x in range(downloaded_queue.qsize()):
         downloaded_pieces.append(await downloaded_queue.get())
 
+    # sort downloads by pieces index
     downloaded_pieces.sort(key=sort_index)
 
+    # write downloaded content to file
     with open(torrent.filename, "wb+") as f:
         for (piece_index, piece) in downloaded_pieces:
+            logging.debug(f"Wrote piece number {piece_index}")
             f.write(piece)
 
 
