@@ -90,28 +90,36 @@ def main():
 
     
 ## async function to connect and download from peers
-async def do_connect(peers, torrent):
+async def do_download(peers, torrent):
 
     # create queues for workers
-    peer_queue = asyncio.Queue()
+    # peer_queue = asyncio.Queue()
     pieces_queue = asyncio.Queue()
     downloaded_queue = asyncio.Queue()
 
+    # create and shuffle pieces list randomly
+    pieces = [(index, piece, torrent.get_piece_length(index)) for index, piece in enumerate(torrent.pieces)]
+    [pieces.append(pieces.pop(randint(0, len(pieces) - 1))) for _ in range(1000)]
+    print(pieces)
+
     # fill input queues with data from torrent file
-    [peer_queue.put_nowait(peer) for peer in peers]
-    [pieces_queue.put_nowait((index, piece, torrent.get_piece_length(index))) for index, piece in enumerate(torrent.pieces)]
+    # [peer_queue.put_nowait(peer) for peer in peers]
+    [pieces_queue.put_nowait(piece) for piece in pieces]
+    # for x in range(pieces_queue.qsize()):
+    #     print(f"{x}: {await pieces_queue.get()}")
+
 
     # create workers
-    handlers = [Worker(f"thread {x}", torrent, ID, peer_queue, pieces_queue, downloaded_queue) for x in range(30)]
+    handlers = [Worker(f"thread {index}", torrent, ID, peer, pieces_queue, downloaded_queue) for index, peer in enumerate(peers)]
     
     # run workers
-    [asyncio.create_task(worker.run()) for worker in handlers]
+    handler_tasks = [asyncio.create_task(worker.run()) for worker in handlers]
 
     print(pieces_queue.qsize())
 
     # wait until all pieces have been downloaded
     await pieces_queue.join()
-    [worker.cancel() for worker in handlers]
+    [worker.cancel() for worker in handler_tasks]
 
     # compress downloaded pieces into a list
     downloaded_pieces = []

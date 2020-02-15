@@ -1,7 +1,6 @@
 from message import *
 
-class BitfieldNotSetError(Exception):
-    pass
+
 
 class DownloadState:
     def __init__(self, stream, piece_hash, piece_index, piece_length):
@@ -16,12 +15,9 @@ class DownloadState:
         self.p_length = piece_length
         self.piece_buf = bytearray(piece_length)
 
-        self.is_choked = True
-        self.is_interested = False
-        self.is_choking = True
-        self.is_interest = False
+        
 
-        self.bitfield = bytearray(b"")
+        
 
     
     async def handle_message(self):
@@ -92,28 +88,4 @@ class DownloadState:
         # print(f"{self.name} Cancel")
         pass
 
-    def has_bit(self, index):
-        if self.bitfield:
-            # get the byte by dividing by 8
-            bf_byte = self.bitfield[index >> 3]
-
-            # index & 7 to get index in that byte. subtract from 7 so it it left to right.
-            return (bf_byte >> (7 - (index & 7))) & 1
-        else:
-            raise BitfieldNotSetError
-
-    def set_bit(self, index, bit):
-        if not isinstance(bit, int):
-            raise TypeError
-
-        if self.bitfield:
-            # get the byte by dividing by 8
-            # index & 7 to get index in that byte. subtract from 7 so it it left to right.
-            if bit == 1:
-                self.bitfield[index >> 3] = self.bitfield[index >> 3] | (1 << (7 - (index & 7)))
-            elif bit == 0:
-               self.bitfield[index >> 3] = self.bitfield[index >> 3] & ~(1 << (7 - (index & 7))) 
-            else:
-                raise ValueError
-        else:
-            raise BitfieldNotSetError 
+     

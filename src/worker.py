@@ -9,7 +9,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 class Worker:
-    def __init__(self, name, torrent, peer_id, peer_q, pieces_q, downloaded_q):
+    def __init__(self, name, torrent, peer_id, peer, pieces_q, downloaded_q):
         self.info_hash = torrent.info_hash
         self.peer_id = peer_id
 
@@ -19,96 +19,107 @@ class Worker:
 
         self.state = DownloadState(0, b"", 0)
 
-        self.peers = peer_q
+        self.peer = peer
         self.pieces = pieces_q
         self.downloaded_q = downloaded_q
         self.name = name
 
     async def run(self):
         logging.info(f"{self.name}: start!")
-        while self.pieces.qsize() > 0:
-            self.peer = await self.peers.get()
+        # self.peer = await self.peers.get()
 
-            # attempt to connect to a peeer
-            try:
-                self.stream = await self.connect(self.peer)
-            except Exception as e:
-                logging.error(f"{self.name}: {e}")
-                self.peers.task_done()
-                continue
+        # attempt to connect to a peer
+        try:
+            self.stream = await self.connect(self.peer)
+        
+        except asyncio.CancelledError as e:
+            raise asyncio.CancelledError
 
-            logging.info(f"{self.name}: Connected to {self.peer.host.exploded}:{self.peer.port}")
+        except Exception as e:
+            logging.error(f"{self.name}: {e}")
+            
 
-            # attempt to exchange handshakes with a peer, with a limit of 30 seconds
-            try:
-                handshake = await self.construct_handshake()
-                await asyncio.wait_for(self.exchange_handshakes(handshake), timeout=30)
-            except Exception as e:
-                logging.error(f"{self.name}: {e}")
-                self.peers.task_done()
-                if not self.stream.is_closed(): await self.stream.close()
-                continue
+        logging.info(f"{self.name}: Connected to {self.peer.host.exploded}:{self.peer.port}")
 
-            try:
-                # while there are pieces to download, we want to also keep trying to download pieces from a peer
-                while self.pieces.qsize() > 0:
+        # attempt to exchange handshakes with a peer, with a limit of 30 seconds
+        try:
+            handshake = await self.construct_handshake()
+            await asyncio.wait_for(self.exchange_handshakes(handshake), timeout=30)
 
-                    if not self.peer.peer_choking:
+        except asyncio.CancelledError as e:
+            raise asyncio.CancelledError
 
-                        # get a valid piece -> update the state
-                        await self.get_valid_piece()
-                        logging.info(f"{self.name} processing {self.state.piece.index}")
-                        logging.debug("got piece")
+        except Exception as e:
+            logging.error(f"{self.name}: {e}")
+            if not self.stream.is_closed(): await self.stream.close()
+            
 
-                        try:
+        try:
+            # while there are pieces to download, we want to also keep trying to download pieces from a peer
+            while True:
 
-                            # download a piece
-                            logging.debug("downloading piece")
-                            await self.download_piece()
+                if not self.peer.peer_choking:
 
-                            # if the piece does not match the given hash, put it back into the work queue and continue
-                            if not self.verify_piece(bytes(self.state.piece_buf)):
-                                await self.pieces.put((self.state.piece.index, self.state.piece.hash, self.state.piece.length))
-                                self.pieces.task_done()
-                                continue
+                    # get a valid piece -> update the state
+                    asyncio.sleep(0.2)
+                    await self.get_valid_piece()
+                    logging.info(f"{self.name} processing {self.state.piece.index}")
+                    logging.debug("got piece")
 
-                            # put the downloaded piece in the finished queue
-                            await self.downloaded_q.put((self.state.piece.index, bytes(self.state.piece_buf)))
-                            self.pieces.task_done()
+                    try:
 
-                            logging.debug("doned")
-                            logging.info(f"{self.name} downloaded {self.state.piece.index}")
+                        # download a piece
+                        logging.debug("downloading piece")
+                        await self.download_piece()
 
-                        except Exception as e:
+                        # if the piece does not match the given hash, put it back into the work queue and continue
+                        if not self.verify_piece(bytes(self.state.piece_buf)):
                             await self.pieces.put((self.state.piece.index, self.state.piece.hash, self.state.piece.length))
                             self.pieces.task_done()
-                            logging.debug("put")
-                            logging.info(f"{self.name} Error!: {e}")
-                            if self.stream.is_closed(): break
                             continue
 
-                    else:
+                        # put the downloaded piece in the finished queue
+                        await self.downloaded_q.put((self.state.piece.index, bytes(self.state.piece_buf)))
+                        self.pieces.task_done()
 
-                        # if we are not unchoked, just wait for the next message
-                        await asyncio.create_task(self.handle_message())
+                        logging.debug("doned")
+                        logging.info(f"{self.name} downloaded {self.state.piece.index}")
 
-                        # make sure we are interested and not choking
-                        if self.peer.client_choking and not self.peer.peer_choking:
-                            self.stream.write(Unchoke().construct())
-                            self.stream.write(Interested().construct())
+                    except asyncio.CancelledError:
+                        raise asyncio.CancelledError
 
-                            self.peer.client_choking = False
-                            self.peer.client_interested = True
+                    except Exception as e:
+                        await self.pieces.put((self.state.piece.index, self.state.piece.hash, self.state.piece.length))
+                        self.pieces.task_done()
+                        logging.debug("put")
+                        logging.info(f"{self.name} Error!: {e}")
+                        if self.stream.is_closed(): break
+                        continue
 
-            except Exception as e:
-                # close the connection on an error
-                logging.error(f"{self.name} super Error!: {e}")
-                if not self.stream.is_closed(): await self.stream.close()
-                self.peers.task_done()
-                continue
+                else:
 
-            logging.debug(f"Current: {self.pieces.qsize()}")
+                    # if we are not unchoked, just wait for the next message
+                    await asyncio.create_task(self.handle_message())
+
+                    # make sure we are interested and not choking
+                    if self.peer.client_choking and not self.peer.peer_choking:
+                        self.stream.write(Unchoke().construct())
+                        self.stream.write(Interested().construct())
+
+                        self.peer.client_choking = False
+                        self.peer.client_interested = True
+
+        except asyncio.CancelledError:
+            raise asyncio.CancelledError
+
+        except Exception as e:
+            # close the connection on an error
+            logging.error(f"{self.name} super Error!: {e}")
             if not self.stream.is_closed(): await self.stream.close()
+            
+
+        logging.debug(f"Current: {self.pieces.qsize()}")
+        if not self.stream.is_closed(): await self.stream.close()
 
         logging.info(f"{self.name}: Finished")
 
@@ -159,6 +170,9 @@ class Worker:
                 # update the state
                 self.state = DownloadState(piece_index, piece_hash, piece_length)
                 return
+
+            except asyncio.CancelledError:
+                raise asyncio.CancelledError
 
             except:
                 await self.pieces.put((piece_index, piece_hash, piece_length))
@@ -215,6 +229,8 @@ class Worker:
         
         try:
             reader, writer = await asyncio.wait_for(conn, timeout=3)
+        except asyncio.CancelledError:
+            raise e
         except asyncio.TimeoutError:
             raise AsyncConnectionError(f"{self.name} {peer} connection attempt timed out")
         except ConnectionRefusedError:
@@ -318,6 +334,8 @@ class AsyncStream:
         while nbytes != 0:
             try:
                 recieved_data = await asyncio.wait_for(self.reader.read(nbytes), 5)
+            except asyncio.CancelledError:
+                raise asyncio.CancelledError
             except asyncio.TimeoutError:
                 recieved_data = b""
 
